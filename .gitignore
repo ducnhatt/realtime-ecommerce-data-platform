@@ -1,0 +1,13 @@
+.env
+venv/
+__pycache__/
+*.py[cod]
+
+# Generated producer output and monitoring logs
+create_data/
+*.jsonl
+
+# Local tooling
+.pytest_cache/
+.idea/
+.vscode/

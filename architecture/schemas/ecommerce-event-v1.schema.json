@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.realtime-ecommerce/schemas/ecommerce-event-v1.schema.json",
+  "title": "Synthetic ecommerce event v1",
+  "description": "Valid payload contract for the 32 fields emitted by create_data.py. Chaos-injected nulls in reviewerID, asin, or overall intentionally fail this schema and are routed to DLQ.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reviewerID",
+    "asin",
+    "reviewerName",
+    "helpful",
+    "reviewText",
+    "overall",
+    "summary",
+    "unixReviewTime",
+    "reviewTime",
+    "day_diff",
+    "helpful_yes",
+    "total_vote",
+    "productName",
+    "category",
+    "sub_category",
+    "brand",
+    "unitPrice",
+    "orderID",
+    "quantity",
+    "totalAmount",
+    "storeID",
+    "storeName",
+    "city",
+    "region",
+    "storeType",
+    "paymentID",
+    "paymentMethod",
+    "paymentStatus",
+    "shippingID",
+    "shippingMethod",
+    "carrierName",
+    "shippingStatus"
+  ],
+  "properties": {
+    "reviewerID": {
+      "type": "string",
+      "pattern": "^[A-Z0-9]{14}$"
+    },
+    "asin": {
+      "type": "string",
+      "pattern": "^B0[A-Z0-9]{8}$"
+    },
+    "reviewerName": {
+      "type": ["string", "null"]
+    },
+    "helpful": {
+      "type": "array",
+      "prefixItems": [
+        { "type": "integer", "minimum": 0, "maximum": 500 },
+        { "type": "integer", "minimum": 0, "maximum": 500 }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "reviewText": {
+      "type": "string",
+      "minLength": 1
+    },
+    "overall": {
+      "type": "number",
+      "enum": [1, 2, 3, 4, 5]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "unixReviewTime": {
+      "type": "integer",
+      "minimum": 1672500000,
+      "maximum": 1735700000
+    },
+    "reviewTime": {
+      "type": "string",
+      "pattern": "^(0[1-9]|1[0-2]) (0[1-9]|[12][0-9]|3[01]), (2023|2024)$"
+    },
+    "day_diff": {
+      "type": "integer",
+      "minimum": 4,
+      "maximum": 1064
+    },
+    "helpful_yes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 500
+    },
+    "total_vote": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 500
+    },
+    "productName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "type": "string",
+      "enum": ["Điện tử", "Thời trang", "Gia dụng", "Mỹ phẩm"]
+    },
+    "sub_category": {
+      "type": "string",
+      "enum": [
+        "Điện thoại",
+        "Laptop",
+        "Tai nghe",
+        "Đồng hồ thông minh",
+        "Áo thun",
+        "Quần Jeans",
+        "Giày Sneaker",
+        "Áo khoác",
+        "Máy xay sinh tố",
+        "Lò vi sóng",
+        "Nồi chiên không dầu",
+        "Máy hút bụi",
+        "Son môi",
+        "Serum",
+        "Nước hoa",
+        "Sữa rửa mặt"
+      ]
+    },
+    "brand": {
+      "type": "string",
+      "enum": ["Apple", "Samsung", "Sony", "Nike", "Adidas", "Philips", "Lock&Lock", "L'Oreal", "Dyson", "LG"]
+    },
+    "unitPrice": {
+      "type": "number",
+      "minimum": 50000,
+      "maximum": 5000000,
+      "multipleOf": 1
+    },
+    "orderID": {
+      "type": "string",
+      "pattern": "^ORD-[A-Z0-9]{10}$"
+    },
+    "quantity": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4
+    },
+    "totalAmount": {
+      "type": "number",
+      "minimum": 50000,
+      "maximum": 20000000,
+      "multipleOf": 1
+    },
+    "storeID": {
+      "type": "string",
+      "pattern": "^STR-.+-(?:[1-9]|10)$"
+    },
+    "storeName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "city": {
+      "type": "string",
+      "enum": ["Hà Nội", "Hải Phòng", "Quảng Ninh", "Đà Nẵng", "Huế", "Nha Trang", "Hồ Chí Minh", "Cần Thơ", "Đồng Nai"]
+    },
+    "region": {
+      "type": "string",
+      "enum": ["Miền Bắc", "Miền Trung", "Miền Nam"]
+    },
+    "storeType": {
+      "type": "string",
+      "enum": ["Cửa hàng Vật lý", "Web Online", "Mobile App"]
+    },
+    "paymentID": {
+      "type": "string",
+      "pattern": "^PAY-[A-Z0-9]{10}$"
+    },
+    "paymentMethod": {
+      "type": "string",
+      "enum": ["Tiền mặt (COD)", "Thẻ Tín Dụng", "Momo", "ZaloPay", "VNPay"]
+    },
+    "paymentStatus": {
+      "type": "string",
+      "enum": ["Thành công", "Đang xử lý", "Thất bại"]
+    },
+    "shippingID": {
+      "type": "string",
+      "pattern": "^SHP-[A-Z0-9]{10}$"
+    },
+    "shippingMethod": {
+      "type": "string",
+      "enum": ["Hỏa tốc", "Tiêu chuẩn", "Tiết kiệm"]
+    },
+    "carrierName": {
+      "type": "string",
+      "enum": ["Giao Hàng Nhanh", "Viettel Post", "Shopee Express", "Ninja Van", "J&T Express"]
+    },
+    "shippingStatus": {
+      "type": "string",
+      "enum": ["Đã giao", "Đang vận chuyển", "Hoàn hàng"]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "category": { "const": "Điện tử" } }, "required": ["category"] },
+      "then": { "properties": { "sub_category": { "enum": ["Điện thoại", "Laptop", "Tai nghe", "Đồng hồ thông minh"] } } }
+    },
+    {
+      "if": { "properties": { "category": { "const": "Thời trang" } }, "required": ["category"] },
+      "then": { "properties": { "sub_category": { "enum": ["Áo thun", "Quần Jeans", "Giày Sneaker", "Áo khoác"] } } }
+    },
+    {
+      "if": { "properties": { "category": { "const": "Gia dụng" } }, "required": ["category"] },
+      "then": { "properties": { "sub_category": { "enum": ["Máy xay sinh tố", "Lò vi sóng", "Nồi chiên không dầu", "Máy hút bụi"] } } }
+    },
+    {
+      "if": { "properties": { "category": { "const": "Mỹ phẩm" } }, "required": ["category"] },
+      "then": { "properties": { "sub_category": { "enum": ["Son môi", "Serum", "Nước hoa", "Sữa rửa mặt"] } } }
+    },
+    {
+      "if": { "properties": { "region": { "const": "Miền Bắc" } }, "required": ["region"] },
+      "then": { "properties": { "city": { "enum": ["Hà Nội", "Hải Phòng", "Quảng Ninh"] } } }
+    },
+    {
+      "if": { "properties": { "region": { "const": "Miền Trung" } }, "required": ["region"] },
+      "then": { "properties": { "city": { "enum": ["Đà Nẵng", "Huế", "Nha Trang"] } } }
+    },
+    {
+      "if": { "properties": { "region": { "const": "Miền Nam" } }, "required": ["region"] },
+      "then": { "properties": { "city": { "enum": ["Hồ Chí Minh", "Cần Thơ", "Đồng Nai"] } } }
+    }
+  ]
+}

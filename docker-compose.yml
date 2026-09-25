@@ -1,0 +1,236 @@
+name: ${COMPOSE_PROJECT_NAME:-realtime-ecommerce}
+
+services:
+  kafka:
+    image: ${KAFKA_IMAGE:-apache/kafka:4.2.0}
+    hostname: kafka
+    container_name: realtime-ecommerce-kafka
+    ports:
+      - "${KAFKA_HOST_PORT:-9092}:9092"
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: CONTROLLER://:29093,INTERNAL://:29092,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:${KAFKA_HOST_PORT:-9092}
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: "10"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-4L6g3nShT-eMCtK--X86sw}
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - ecommerce-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list >/dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  minio:
+    image: ${MINIO_IMAGE:-ghcr.io/coollabsio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a4938f37f1be1841b8e7b627ad0207b265345fd0d063e42d7410c78af0e63e68}
+    hostname: minio
+    container_name: realtime-ecommerce-minio
+    profiles:
+      - streaming
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_API_HOST_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MC_HOST_health: http://${MINIO_ROOT_USER:-minioadmin}:${MINIO_ROOT_PASSWORD:-minioadmin123}@localhost:9000
+    volumes:
+      - minio-data:/data
+    networks:
+      - ecommerce-net
+    healthcheck:
+      test:
+        - CMD
+        - /usr/bin/mc
+        - ready
+        - health
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  minio-init:
+    image: ${MINIO_IMAGE:-ghcr.io/coollabsio/minio:RELEASE.2025-04-22T22-12-26Z@sha256:a4938f37f1be1841b8e7b627ad0207b265345fd0d063e42d7410c78af0e63e68}
+    container_name: realtime-ecommerce-minio-init
+    profiles:
+      - streaming
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - >-
+        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" &&
+        mc mb --ignore-existing local/bronze &&
+        mc mb --ignore-existing local/silver &&
+        mc mb --ignore-existing local/dlq &&
+        mc mb --ignore-existing local/checkpoints &&
+        mc ls local
+    networks:
+      - ecommerce-net
+    restart: "no"
+
+  spark-master:
+    image: ${SPARK_IMAGE:-spark:4.0.4-scala2.13-java17-python3-ubuntu}
+    hostname: spark-master
+    container_name: realtime-ecommerce-spark-master
+    profiles:
+      - streaming
+    command:
+      - /opt/spark/sbin/start-master.sh
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: "7077"
+      SPARK_MASTER_WEBUI_PORT: "8080"
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_INTERNAL_BROKER:-kafka:29092}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-ecommerce_reviews}
+      SOURCE_TIME_ZONE: ${SOURCE_TIME_ZONE:-Asia/Ho_Chi_Minh}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_BRONZE_BUCKET: ${MINIO_BRONZE_BUCKET:-bronze}
+      MINIO_SILVER_BUCKET: ${MINIO_SILVER_BUCKET:-silver}
+      MINIO_DLQ_BUCKET: ${MINIO_DLQ_BUCKET:-dlq}
+      MINIO_CHECKPOINT_BUCKET: ${MINIO_CHECKPOINT_BUCKET:-checkpoints}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis-local-dev}
+      REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-ecom:rt:v1}
+      REDIS_METRIC_TTL_SECONDS: ${REDIS_METRIC_TTL_SECONDS:-172800}
+      REDIS_LATEST_LIMIT: ${REDIS_LATEST_LIMIT:-100}
+      REDIS_STREAM_TRIGGER_INTERVAL: ${REDIS_STREAM_TRIGGER_INTERVAL:-10 seconds}
+      STREAM_TRIGGER_INTERVAL: ${STREAM_TRIGGER_INTERVAL:-10 seconds}
+      STREAM_OUTPUT_PARTITIONS: ${STREAM_OUTPUT_PARTITIONS:-1}
+      SILVER_OUTPUT_PARTITIONS: ${SILVER_OUTPUT_PARTITIONS:-1}
+      SILVER_INCREMENTAL_PREFIX: ${SILVER_INCREMENTAL_PREFIX:-ecommerce_reviews_incremental_v1}
+      SILVER_INCREMENTAL_CHECKPOINT_PREFIX: ${SILVER_INCREMENTAL_CHECKPOINT_PREFIX:-bronze_to_silver_incremental_v1}
+      SILVER_MAX_FILES_PER_TRIGGER: ${SILVER_MAX_FILES_PER_TRIGGER:-10}
+      SILVER_INCREMENTAL_OUTPUT_PARTITIONS: ${SILVER_INCREMENTAL_OUTPUT_PARTITIONS:-2}
+      KAFKA_MAX_OFFSETS_PER_TRIGGER: ${KAFKA_MAX_OFFSETS_PER_TRIGGER:-10000}
+      PYTHONPATH: /opt/spark-apps
+      VALIDATION_SAMPLE_DIR: /opt/contract-samples
+    ports:
+      - "${SPARK_MASTER_HOST_PORT:-7077}:7077"
+      - "${SPARK_MASTER_UI_HOST_PORT:-8080}:8080"
+    volumes:
+      - ./spark:/opt/spark-apps:ro
+      - ./architecture/samples:/opt/contract-samples:ro
+    networks:
+      - ecommerce-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8080', timeout=2)" >/dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  spark-worker:
+    image: ${SPARK_IMAGE:-spark:4.0.4-scala2.13-java17-python3-ubuntu}
+    hostname: spark-worker
+    container_name: realtime-ecommerce-spark-worker
+    profiles:
+      - streaming
+    command:
+      - /opt/spark/sbin/start-worker.sh
+      - spark://spark-master:7077
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-2}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-2g}
+      SPARK_WORKER_WEBUI_PORT: "8081"
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis-local-dev}
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    ports:
+      - "${SPARK_WORKER_UI_HOST_PORT:-8081}:8081"
+    networks:
+      - ecommerce-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8081', timeout=2)" >/dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:8.10.2-alpine}
+    hostname: redis
+    container_name: realtime-ecommerce-redis
+    profiles:
+      - serving
+    command:
+      - /bin/sh
+      - -c
+      - >-
+        exec redis-server
+        --appendonly yes
+        --appendfsync everysec
+        --maxmemory "$${REDIS_MAXMEMORY}"
+        --maxmemory-policy noeviction
+        --requirepass "$${REDIS_PASSWORD}"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis-local-dev}
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-256mb}
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - ecommerce-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - REDISCLI_AUTH="$${REDIS_PASSWORD}" redis-cli ping | grep -q PONG
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+networks:
+  ecommerce-net:
+    name: ecommerce-net
+
+volumes:
+  kafka-data:
+    name: realtime-ecommerce-kafka-data
+  minio-data:
+    name: realtime-ecommerce-minio-data
+  redis-data:
+    name: realtime-ecommerce-redis-data
