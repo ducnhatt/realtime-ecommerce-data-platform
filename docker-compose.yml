@@ -125,8 +125,19 @@ services:
       REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-ecom:rt:v1}
       REDIS_METRIC_TTL_SECONDS: ${REDIS_METRIC_TTL_SECONDS:-172800}
       REDIS_LATEST_LIMIT: ${REDIS_LATEST_LIMIT:-100}
-      REDIS_STREAM_TRIGGER_INTERVAL: ${REDIS_STREAM_TRIGGER_INTERVAL:-10 seconds}
-      STREAM_TRIGGER_INTERVAL: ${STREAM_TRIGGER_INTERVAL:-10 seconds}
+      REDIS_STREAM_TRIGGER_INTERVAL: ${REDIS_STREAM_TRIGGER_INTERVAL:-25 seconds}
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-clickhouse}
+      CLICKHOUSE_HTTP_PORT: ${CLICKHOUSE_HTTP_PORT:-8123}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-ecommerce}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-ecommerce-local-dev}
+      CLICKHOUSE_STAGING_DATABASE: ${CLICKHOUSE_STAGING_DATABASE:-staging}
+      CLICKHOUSE_STAGING_TABLE: ${CLICKHOUSE_STAGING_TABLE:-ecommerce_events_raw}
+      CLICKHOUSE_STAGING_CHECKPOINT_PREFIX: ${CLICKHOUSE_STAGING_CHECKPOINT_PREFIX:-silver_to_clickhouse_staging_v1}
+      CLICKHOUSE_STAGING_MAX_FILES_PER_TRIGGER: ${CLICKHOUSE_STAGING_MAX_FILES_PER_TRIGGER:-10}
+      CLICKHOUSE_STAGING_OUTPUT_PARTITIONS: ${CLICKHOUSE_STAGING_OUTPUT_PARTITIONS:-2}
+      CLICKHOUSE_CONTROL_DATABASE: ${CLICKHOUSE_CONTROL_DATABASE:-control}
+      CLICKHOUSE_GOLD_DATABASE: ${CLICKHOUSE_GOLD_DATABASE:-gold}
+      STREAM_TRIGGER_INTERVAL: ${STREAM_TRIGGER_INTERVAL:-25 seconds}
       STREAM_OUTPUT_PARTITIONS: ${STREAM_OUTPUT_PARTITIONS:-1}
       SILVER_OUTPUT_PARTITIONS: ${SILVER_OUTPUT_PARTITIONS:-1}
       SILVER_INCREMENTAL_PREFIX: ${SILVER_INCREMENTAL_PREFIX:-ecommerce_reviews_incremental_v1}
@@ -134,14 +145,19 @@ services:
       SILVER_MAX_FILES_PER_TRIGGER: ${SILVER_MAX_FILES_PER_TRIGGER:-10}
       SILVER_INCREMENTAL_OUTPUT_PARTITIONS: ${SILVER_INCREMENTAL_OUTPUT_PARTITIONS:-2}
       KAFKA_MAX_OFFSETS_PER_TRIGGER: ${KAFKA_MAX_OFFSETS_PER_TRIGGER:-10000}
-      PYTHONPATH: /opt/spark-apps
+      MONITORING_DIR: ${MONITORING_CONTAINER_DIR:-/opt/monitoring}
+      BRONZE_MONITOR_FILE: ${BRONZE_MONITOR_FILE:-spark_bronze_monitor.jsonl}
+      SILVER_MONITOR_FILE: /tmp/silver_stream_monitor_manual.jsonl
+      PYTHONPATH: /opt/platform-src:/opt/spark-apps
       VALIDATION_SAMPLE_DIR: /opt/contract-samples
     ports:
       - "${SPARK_MASTER_HOST_PORT:-7077}:7077"
       - "${SPARK_MASTER_UI_HOST_PORT:-8080}:8080"
     volumes:
       - ./spark:/opt/spark-apps:ro
+      - ./src:/opt/platform-src/src:ro
       - ./architecture/samples:/opt/contract-samples:ro
+      - ${MONITORING_HOST_DIR:-./monitoring}:${MONITORING_CONTAINER_DIR:-/opt/monitoring}
     networks:
       - ecommerce-net
     healthcheck:
@@ -165,12 +181,20 @@ services:
       - spark://spark-master:7077
     environment:
       SPARK_NO_DAEMONIZE: "true"
-      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-2}
-      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-2g}
+      SPARK_WORKER_CORES: ${SPARK_WORKER_CORES:-4}
+      SPARK_WORKER_MEMORY: ${SPARK_WORKER_MEMORY:-6g}
       SPARK_WORKER_WEBUI_PORT: "8081"
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:-redis-local-dev}
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-clickhouse}
+      CLICKHOUSE_HTTP_PORT: ${CLICKHOUSE_HTTP_PORT:-8123}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-ecommerce}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-ecommerce-local-dev}
+      CLICKHOUSE_STAGING_DATABASE: ${CLICKHOUSE_STAGING_DATABASE:-staging}
+      CLICKHOUSE_STAGING_TABLE: ${CLICKHOUSE_STAGING_TABLE:-ecommerce_events_raw}
+      CLICKHOUSE_CONTROL_DATABASE: ${CLICKHOUSE_CONTROL_DATABASE:-control}
+      CLICKHOUSE_GOLD_DATABASE: ${CLICKHOUSE_GOLD_DATABASE:-gold}
     depends_on:
       spark-master:
         condition: service_healthy
@@ -223,6 +247,122 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  clickhouse:
+    image: ${CLICKHOUSE_IMAGE:-clickhouse:26.3.33.24}
+    hostname: clickhouse
+    container_name: realtime-ecommerce-clickhouse
+    profiles:
+      - warehouse
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-ecommerce}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-ecommerce-local-dev}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "127.0.0.1:${CLICKHOUSE_HTTP_HOST_PORT:-8123}:8123"
+      - "127.0.0.1:${CLICKHOUSE_NATIVE_HOST_PORT:-9002}:9000"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    networks:
+      - ecommerce-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - clickhouse-client --user "$${CLICKHOUSE_USER}" --password "$${CLICKHOUSE_PASSWORD}" --query "SELECT 1" | grep -q 1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    restart: unless-stopped
+
+  airflow:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+      args:
+        AIRFLOW_BASE_IMAGE: ${AIRFLOW_BASE_IMAGE:-apache/airflow:slim-3.3.2-python3.10}
+        PYSPARK_VERSION: ${PYSPARK_VERSION:-4.0.4}
+    image: ${AIRFLOW_RUNTIME_IMAGE:-realtime-ecommerce-airflow:3.3.2-spark4.0.4}
+    hostname: airflow
+    container_name: realtime-ecommerce-airflow
+    profiles:
+      - orchestration
+    command:
+      - standalone
+    environment:
+      AIRFLOW_HOME: /opt/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__PARALLELISM: ${AIRFLOW_PARALLELISM:-2}
+      AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: ${AIRFLOW_MAX_ACTIVE_TASKS_PER_DAG:-1}
+      AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES: "1"
+      CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-clickhouse}
+      CLICKHOUSE_HTTP_PORT: ${CLICKHOUSE_HTTP_PORT:-8123}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-ecommerce}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-ecommerce-local-dev}
+      CLICKHOUSE_STAGING_DATABASE: ${CLICKHOUSE_STAGING_DATABASE:-staging}
+      CLICKHOUSE_STAGING_TABLE: ${CLICKHOUSE_STAGING_TABLE:-ecommerce_events_raw}
+      CLICKHOUSE_STAGING_CHECKPOINT_PREFIX: ${CLICKHOUSE_STAGING_CHECKPOINT_PREFIX:-silver_to_clickhouse_staging_v1}
+      CLICKHOUSE_STAGING_MAX_FILES_PER_TRIGGER: ${CLICKHOUSE_STAGING_MAX_FILES_PER_TRIGGER:-10}
+      CLICKHOUSE_STAGING_OUTPUT_PARTITIONS: ${CLICKHOUSE_STAGING_OUTPUT_PARTITIONS:-2}
+      CLICKHOUSE_GOLD_DATABASE: ${CLICKHOUSE_GOLD_DATABASE:-gold}
+      SOURCE_TIME_ZONE: ${SOURCE_TIME_ZONE:-Asia/Ho_Chi_Minh}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-ecommerce_reviews}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_BRONZE_BUCKET: ${MINIO_BRONZE_BUCKET:-bronze}
+      MINIO_SILVER_BUCKET: ${MINIO_SILVER_BUCKET:-silver}
+      MINIO_CHECKPOINT_BUCKET: ${MINIO_CHECKPOINT_BUCKET:-checkpoints}
+      SILVER_INCREMENTAL_PREFIX: ${SILVER_INCREMENTAL_PREFIX:-ecommerce_reviews_incremental_v1}
+      SILVER_DATASET_PREFIX: ${SILVER_INCREMENTAL_PREFIX:-ecommerce_reviews_incremental_v1}
+      SILVER_INCREMENTAL_CHECKPOINT_PREFIX: ${SILVER_INCREMENTAL_CHECKPOINT_PREFIX:-bronze_to_silver_incremental_v1}
+      SILVER_MAX_FILES_PER_TRIGGER: ${SILVER_MAX_FILES_PER_TRIGGER:-10}
+      SILVER_INCREMENTAL_OUTPUT_PARTITIONS: ${SILVER_INCREMENTAL_OUTPUT_PARTITIONS:-2}
+      SPARK_MASTER_URL: ${SPARK_MASTER_URL:-spark://spark-master:7077}
+      WAREHOUSE_DAG_SCHEDULE: "${WAREHOUSE_DAG_SCHEDULE:-*/30 * * * *}"
+      MONITORING_DIR: ${MONITORING_CONTAINER_DIR:-/opt/monitoring}
+      RAW_DATA_MONITOR_FILE: ${RAW_DATA_MONITOR_FILE:-raw_data_monitor.jsonl}
+      BRONZE_MONITOR_FILE: ${BRONZE_MONITOR_FILE:-spark_bronze_monitor.jsonl}
+      SILVER_MONITOR_FILE: ${SILVER_MONITOR_FILE:-silver_stream_monitor.jsonl}
+      MONITORING_AGGREGATION_SCHEDULE: "${MONITORING_AGGREGATION_SCHEDULE:-*/5 * * * *}"
+      SPARK_HADOOP_CLOUD_PACKAGE: ${SPARK_HADOOP_CLOUD_PACKAGE:-org.apache.spark:spark-hadoop-cloud_2.13:4.0.4}
+      CLICKHOUSE_SPARK_PACKAGE: ${CLICKHOUSE_SPARK_PACKAGE:-com.clickhouse.spark:clickhouse-spark-runtime-4.0_2.13:0.10.0}
+      CLICKHOUSE_JDBC_PACKAGE: ${CLICKHOUSE_JDBC_PACKAGE:-com.clickhouse:clickhouse-jdbc:0.9.5}
+      DBT_CLICKHOUSE_HOST: ${CLICKHOUSE_HOST:-clickhouse}
+      DBT_CLICKHOUSE_PORT: ${CLICKHOUSE_HTTP_PORT:-8123}
+      DBT_TARGET: ${DBT_TARGET:-dev}
+      DBT_CLICKHOUSE_DEV_SCHEMA: ${DBT_CLICKHOUSE_DEV_SCHEMA:-gold_dbt_dev}
+      DBT_CLICKHOUSE_PROD_SCHEMA: ${DBT_CLICKHOUSE_PROD_SCHEMA:-gold}
+      DBT_THREADS: ${DBT_THREADS:-2}
+      DBT_LOG_PATH: /opt/airflow/dbt-logs
+      DBT_TARGET_PATH: /opt/airflow/dbt-target
+      PYTHONPATH: /opt/platform-src:/opt/spark-apps
+    ports:
+      - "127.0.0.1:${AIRFLOW_HOST_PORT:-8082}:8080"
+    volumes:
+      - airflow-data:/opt/airflow
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - ./spark:/opt/spark-apps:ro
+      - ./src:/opt/platform-src/src:ro
+      - ./dbt:/opt/dbt-project:ro
+      - ./clickhouse:/opt/clickhouse:ro
+      - ${MONITORING_HOST_DIR:-./monitoring}:${MONITORING_CONTAINER_DIR:-/opt/monitoring}
+    networks:
+      - ecommerce-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v2/monitor/health', timeout=5)" >/dev/null 2>&1
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
 networks:
   ecommerce-net:
     name: ecommerce-net
@@ -234,3 +374,7 @@ volumes:
     name: realtime-ecommerce-minio-data
   redis-data:
     name: realtime-ecommerce-redis-data
+  clickhouse-data:
+    name: realtime-ecommerce-clickhouse-data
+  airflow-data:
+    name: realtime-ecommerce-airflow-data
