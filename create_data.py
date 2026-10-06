@@ -6,7 +6,8 @@ import os
 import argparse
 import pandas as pd
 import sys
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 
 # Khai báo đường dẫn gốc để Python nhận diện thư mục src
 sys.path.append(os.getcwd())
@@ -14,9 +15,7 @@ from faker import Faker
 from dotenv import load_dotenv
 from confluent_kafka import Producer
 from confluent_kafka.admin import AdminClient, NewTopic
-
-# Monitoring
-# from src.monitoring.monitoring_raw_data import MonitoringRawData
+from src.monitoring.monitoring_raw_data import MonitoringRawData
 
 # ==========================================
 # 1. CẤU HÌNH HỆ THỐNG
@@ -27,12 +26,32 @@ KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "ecommerce_reviews")
 OUTPUT_FOLDER = os.getenv("OUTPUT_FOLDER_NAME", "create_data")
 OUTPUT_FILE = os.getenv("OUTPUT_FILE_NAME", "realtime_reviews.jsonl")
+RAW_DATA_MONITOR_PATH = os.getenv(
+    "RAW_DATA_MONITOR_PATH", "monitoring/raw_data_monitor.jsonl"
+)
 
 fake = Faker()
-# raw_data_monitor = MonitoringRawData()
 
-conf = {'bootstrap.servers': KAFKA_BROKER}
+conf = {
+    'bootstrap.servers': KAFKA_BROKER,
+    'acks': os.getenv('KAFKA_PRODUCER_ACKS', 'all'),
+    'enable.idempotence': os.getenv(
+        'KAFKA_PRODUCER_ENABLE_IDEMPOTENCE', 'true'
+    ).lower() == 'true',
+    'retries': int(os.getenv('KAFKA_PRODUCER_RETRIES', '10')),
+    'delivery.timeout.ms': int(
+        os.getenv('KAFKA_PRODUCER_DELIVERY_TIMEOUT_MS', '120000')
+    ),
+    'request.timeout.ms': int(
+        os.getenv('KAFKA_PRODUCER_REQUEST_TIMEOUT_MS', '30000')
+    ),
+}
 producer = Producer(conf)
+delivery_stats = {'attempted': 0, 'acknowledged': 0, 'failed': 0}
+raw_data_monitor = MonitoringRawData(
+    path=RAW_DATA_MONITOR_PATH,
+    topic=KAFKA_TOPIC,
+)
 
 # ==========================================
 # 🌟 TỪ ĐIỂN DỮ LIỆU CHUẨN (CHO DASHBOARD BI)
@@ -90,7 +109,10 @@ def inject_chaos(record):
 
 def delivery_report(err, msg):
     if err is not None:
+        delivery_stats['failed'] += 1
         print(f"❌ Lỗi gửi tin lên Kafka: {err}")
+    else:
+        delivery_stats['acknowledged'] += 1
 
 def generate_random_id(length, prefix=""):
     chars = string.ascii_uppercase + string.digits
@@ -181,6 +203,7 @@ def process_and_send_record(record, file_handler):
     file_handler.flush()
     
     producer.produce(topic=KAFKA_TOPIC, value=json_payload.encode('utf-8'), callback=delivery_report)
+    delivery_stats['attempted'] += 1
     producer.poll(0)
     
     # raw_data_monitor.log_ingestion(record, start_time)
@@ -188,18 +211,54 @@ def process_and_send_record(record, file_handler):
 # ==========================================
 # 3. LUỒNG THỰC THI (REALTIME / BATCH)
 # ==========================================
-def run_realtime(file_handler):
+def run_realtime(file_handler, max_records=None):
+    run_id = str(uuid.uuid4())
+    started_at = time.perf_counter()
     print(f"🚀 Đang chạy REAL-TIME. Đang bắn dữ liệu vào topic '{KAFKA_TOPIC}'...")
     try:
-        while True:
+        while max_records is None or delivery_stats['attempted'] < max_records:
             record = generate_review_data()
             process_and_send_record(record, file_handler)
-            print(f"[{time.strftime('%H:%M:%S')}] Đã sinh & gửi 1 bản ghi giao dịch E-commerce...")
-            time.sleep(0.5) 
+            print(
+                f"[{time.strftime('%H:%M:%S')}] Đã sinh & xếp hàng "
+                f"bản ghi {delivery_stats['attempted']}..."
+            )
+            if max_records is None or delivery_stats['attempted'] < max_records:
+                time.sleep(0.5)
     except KeyboardInterrupt:
         print("\n🛑 Đã dừng Real-time.")
     finally:
-        producer.flush()
+        outstanding = producer.flush()
+        attempted = delivery_stats['attempted']
+        acknowledged = delivery_stats['acknowledged']
+        failed = delivery_stats['failed']
+        status = (
+            'OK'
+            if attempted == acknowledged and failed == 0 and outstanding == 0
+            else 'FAILED'
+        )
+        print(
+            "PRODUCER_DELIVERY_SUMMARY "
+            f"status={status} attempted={attempted} "
+            f"acknowledged={acknowledged} failed={failed} "
+            f"outstanding={outstanding}"
+        )
+        raw_data_monitor.log_delivery_summary(
+            attempted=attempted,
+            acknowledged=acknowledged,
+            failed=failed,
+            status=status,
+            outstanding=outstanding,
+            duration_ms=round((time.perf_counter() - started_at) * 1000, 3),
+            run_id=run_id,
+            event_time=datetime.now(timezone.utc),
+        )
+        if status != 'OK':
+            raise RuntimeError(
+                "Kafka delivery contract failed: "
+                f"attempted={attempted}, acknowledged={acknowledged}, "
+                f"failed={failed}, outstanding={outstanding}"
+            )
 
 def run_batch(file_path, file_handler):
     print(f"📦 Chế độ BATCH tạm thời không hỗ trợ format data mới. Vui lòng dùng Real-time.")
@@ -209,7 +268,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Công tắc luồng dữ liệu E-commerce")
     parser.add_argument('--mode', type=str, choices=['realtime', 'batch'], required=True)
     parser.add_argument('--file', type=str, default='../data_kaggle/e-commerce.csv')
+    parser.add_argument(
+        '--max-records',
+        type=int,
+        default=None,
+        help='Dừng realtime sau đúng số record đã enqueue rồi chờ Kafka acknowledge.',
+    )
     args = parser.parse_args()
+
+    if args.max_records is not None and args.max_records <= 0:
+        parser.error('--max-records phải là số nguyên dương')
 
     setup_kafka_topic()
 
@@ -218,6 +286,6 @@ if __name__ == "__main__":
 
     with open(file_path, "a", encoding="utf-8") as f:
         if args.mode == 'realtime':
-            run_realtime(f)
+            run_realtime(f, max_records=args.max_records)
         elif args.mode == 'batch':
             run_batch(args.file, f)
