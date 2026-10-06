@@ -1,0 +1,43 @@
+{{
+    config(
+        order_by=[
+            'review_date',
+            'asin',
+            'store_id',
+            'kafka_topic',
+            'kafka_partition',
+            'kafka_offset'
+        ],
+        primary_key=['review_date', 'asin', 'store_id'],
+        partition_by=['toYYYYMM(ingest_date)']
+    )
+}}
+
+select
+    kafka_topic,
+    kafka_partition,
+    kafka_offset,
+    asin,
+    store_id,
+    reviewer_id,
+    review_date,
+    review_timestamp,
+    order_id,
+    payment_id,
+    shipping_id,
+    unit_price,
+    quantity,
+    total_amount,
+    overall_rating,
+    helpful_yes,
+    total_vote,
+    payment_method,
+    payment_status,
+    shipping_method,
+    carrier_name,
+    shipping_status,
+    kafka_timestamp,
+    ingested_at,
+    ingest_date,
+    validation_status
+from {{ ref('stg_ecommerce_events_current') }}

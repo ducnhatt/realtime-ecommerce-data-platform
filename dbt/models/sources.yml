@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: staging
+    description: ClickHouse current-state boundary loaded incrementally from MinIO Silver.
+    schema: staging
+    tables:
+      - name: ecommerce_events_current
+        description: Conflict-free, replay-collapsed ecommerce events eligible for Gold.
+      - name: ecommerce_events_conflicts
+        description: Kafka lineages that have more than one observed payload hash.

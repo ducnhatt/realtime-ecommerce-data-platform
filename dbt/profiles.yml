@@ -1,0 +1,23 @@
+ecommerce_clickhouse:
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
+  outputs:
+    dev:
+      type: clickhouse
+      host: "{{ env_var('DBT_CLICKHOUSE_HOST') }}"
+      port: "{{ env_var('DBT_CLICKHOUSE_PORT') | int }}"
+      user: "{{ env_var('CLICKHOUSE_USER') }}"
+      password: "{{ env_var('CLICKHOUSE_PASSWORD') }}"
+      schema: "{{ env_var('DBT_CLICKHOUSE_DEV_SCHEMA', 'gold_dbt_dev') }}"
+      secure: false
+      verify: false
+      threads: "{{ env_var('DBT_THREADS', '2') | int }}"
+    prod:
+      type: clickhouse
+      host: "{{ env_var('DBT_CLICKHOUSE_HOST') }}"
+      port: "{{ env_var('DBT_CLICKHOUSE_PORT') | int }}"
+      user: "{{ env_var('CLICKHOUSE_USER') }}"
+      password: "{{ env_var('CLICKHOUSE_PASSWORD') }}"
+      schema: "{{ env_var('DBT_CLICKHOUSE_PROD_SCHEMA', 'gold') }}"
+      secure: false
+      verify: false
+      threads: "{{ env_var('DBT_THREADS', '2') | int }}"

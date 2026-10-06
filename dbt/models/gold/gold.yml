@@ -1,0 +1,69 @@
+version: 2
+
+models:
+  - name: dim_product
+    description: Current SCD Type 1 product attributes keyed by asin.
+    columns:
+      - name: asin
+        data_tests: [not_null, unique]
+
+  - name: dim_store
+    description: Current SCD Type 1 store attributes keyed by store_id.
+    columns:
+      - name: store_id
+        data_tests: [not_null, unique]
+
+  - name: dim_reviewer
+    description: Current SCD Type 1 reviewer attributes keyed by reviewer_id.
+    columns:
+      - name: reviewer_id
+        data_tests: [not_null, unique]
+
+  - name: dim_date
+    description: Continuous calendar between the minimum and maximum review date.
+    columns:
+      - name: date
+        data_tests: [not_null, unique]
+
+  - name: fact_ecommerce_event
+    description: One business-eligible ecommerce transaction-review event per Kafka lineage.
+    columns:
+      - name: kafka_topic
+        data_tests: [not_null]
+      - name: kafka_partition
+        data_tests: [not_null]
+      - name: kafka_offset
+        data_tests: [not_null]
+      - name: asin
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_product')
+                field: asin
+      - name: store_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_store')
+                field: store_id
+      - name: reviewer_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_reviewer')
+                field: reviewer_id
+      - name: review_date
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date
+      - name: validation_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['VALID', 'WARNING']
