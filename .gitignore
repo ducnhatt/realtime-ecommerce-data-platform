@@ -1,5 +1,7 @@
+# Local environment files; keep the public template
 .env
-.env.example
+.env.*
+!.env.example
 venv/
 __pycache__/
 *.py[cod]
@@ -7,8 +9,18 @@ __pycache__/
 # Generated producer output and monitoring logs
 create_data/
 *.jsonl
+monitoring/aggregated/*.json
+monitoring/state/*.json
 
 # Local tooling
 .pytest_cache/
 .idea/
 .vscode/
+
+# dbt generated artifacts
+dbt/target/
+dbt/logs/
+dbt_packages/
+
+# Generated dbt user metadata
+dbt/.user.yml

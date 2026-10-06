@@ -1,0 +1,22 @@
+.git
+.env
+.agents
+.codex
+.codex-remote-attachments
+venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.idea
+.vscode
+create_data
+*.jsonl
+dbt/target
+dbt/logs
+dbt/dbt_packages
+
+# Environment variants and local runtime state
+.env.*
+monitoring/
+dbt/.user.yml
