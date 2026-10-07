@@ -8,7 +8,12 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from pipeline.storage import configure_minio_s3a
+from pipeline.bronze_manifest import (
+    committed_batch_status_counts,
+    committed_manifest_time,
+)
 from pipeline.validation import validate_events
+from src.monitoring.monitoring_bronze import MonitoringBronze
 
 
 BRONZE_COLUMNS = [
@@ -74,9 +79,9 @@ def read_kafka_stream(
 
 
 def prepare_outputs(source: DataFrame) -> tuple[DataFrame, DataFrame]:
-    validated = validate_events(source).withColumn(
-        "ingest_date",
-        F.to_date("kafka_timestamp"),
+    validated = (
+        validate_events(source)
+        .withColumn("ingest_date", F.to_date("kafka_timestamp"))
     )
 
     bronze = validated.filter(
@@ -137,18 +142,32 @@ def total_kafka_offset(offsets) -> int:
     return total
 
 
-def monitor_committed_batches(queries, poll_interval_seconds: int = 2) -> None:
-    """Print one observable marker after each query finishes a micro-batch."""
+def monitor_committed_batches(
+    queries,
+    bronze_monitor: MonitoringBronze,
+    spark: SparkSession,
+    bronze_output: str,
+    dlq_output: str,
+    bronze_checkpoint: str,
+    dlq_checkpoint: str,
+    poll_interval_seconds: int = 2,
+) -> None:
+    """Emit quality only when both physical sink manifests are committed."""
 
-    last_reported_batch = {str(query.id): -1 for query in queries}
+    seen_progress = set()
+    pending_progress = {}
+    monitored_batches = set()
+    expected_queries = {query.name for query in queries}
 
     while all(query.isActive for query in queries):
         for query in queries:
             query_key = str(query.id)
             for progress in query.recentProgress:
                 batch_id = int(progress["batchId"])
-                if batch_id <= last_reported_batch[query_key]:
+                progress_key = (query_key, batch_id, progress.get("timestamp"))
+                if progress_key in seen_progress:
                     continue
+                seen_progress.add(progress_key)
 
                 sources = progress.get("sources", [])
                 source_progress = sources[0] if sources else {}
@@ -182,7 +201,75 @@ def monitor_committed_batches(queries, poll_interval_seconds: int = 2) -> None:
                     f"end_offset={compact_end_offset}",
                     flush=True,
                 )
-                last_reported_batch[query_key] = batch_id
+                pending_progress.setdefault(batch_id, {})[query.name] = progress
+
+        for batch_id in sorted(pending_progress):
+            if batch_id in monitored_batches:
+                continue
+            progress_by_query = pending_progress[batch_id]
+            if not expected_queries.issubset(progress_by_query):
+                continue
+
+            try:
+                bronze_result = committed_batch_status_counts(
+                    spark, bronze_output, bronze_checkpoint, batch_id
+                )
+                dlq_result = committed_batch_status_counts(
+                    spark, dlq_output, dlq_checkpoint, batch_id
+                )
+                if bronze_result is None or dlq_result is None:
+                    continue
+                bronze_counts, bronze_expected = bronze_result
+                dlq_counts, dlq_expected = dlq_result
+                if bronze_expected is not None or dlq_expected is not None:
+                    if bronze_expected != dlq_expected:
+                        raise RuntimeError("compacted sink Kafka offset boundaries differ")
+                    physical_rows = sum(bronze_counts.values()) + sum(dlq_counts.values())
+                    if physical_rows != bronze_expected:
+                        raise RuntimeError(
+                            f"compacted batch physical rows {physical_rows} "
+                            f"!= Kafka offset delta {bronze_expected}"
+                        )
+                committed_at = max(
+                    committed_manifest_time(spark, bronze_output, batch_id),
+                    committed_manifest_time(spark, dlq_output, batch_id),
+                )
+            except Exception as exc:
+                print(
+                    "BRONZE_MONITORING_RETRY "
+                    f"batch_id={batch_id} error={exc!r}",
+                    flush=True,
+                )
+                continue
+            unexpected = (
+                set(bronze_counts) - {"VALID", "WARNING"}
+            ) | (set(dlq_counts) - {"INVALID"})
+            if unexpected:
+                print(
+                    "BRONZE_MONITORING_SKIPPED "
+                    f"batch_id={batch_id} unexpected_statuses={sorted(unexpected)}",
+                    flush=True,
+                )
+                continue
+            valid_count = bronze_counts.get("VALID", 0)
+            warning_count = bronze_counts.get("WARNING", 0)
+            invalid_count = dlq_counts.get("INVALID", 0)
+            durations = [
+                int(progress.get("durationMs", {}).get("triggerExecution", 0))
+                for progress in progress_by_query.values()
+            ]
+            written = bronze_monitor.log_committed_batch(
+                batch_id=batch_id,
+                batch_input_rows=valid_count + warning_count + invalid_count,
+                valid_count=valid_count,
+                warning_count=warning_count,
+                invalid_count=invalid_count,
+                duration_ms=max(durations),
+                committed_at=committed_at,
+            )
+            if written == 3:
+                monitored_batches.add(batch_id)
+                del pending_progress[batch_id]
 
         time.sleep(poll_interval_seconds)
 
@@ -194,10 +281,14 @@ def main() -> None:
     bronze_bucket = os.getenv("MINIO_BRONZE_BUCKET", "bronze")
     dlq_bucket = os.getenv("MINIO_DLQ_BUCKET", "dlq")
     checkpoint_bucket = os.getenv("MINIO_CHECKPOINT_BUCKET", "checkpoints")
-    trigger_interval = os.getenv("STREAM_TRIGGER_INTERVAL", "10 seconds")
+    trigger_interval = os.getenv("STREAM_TRIGGER_INTERVAL", "25 seconds")
     output_partitions = int(os.getenv("STREAM_OUTPUT_PARTITIONS", "1"))
     max_offsets_per_trigger = int(
         os.getenv("KAFKA_MAX_OFFSETS_PER_TRIGGER", "10000")
+    )
+    monitoring_dir = os.getenv("MONITORING_DIR", "/opt/monitoring")
+    bronze_monitor_file = os.getenv(
+        "BRONZE_MONITOR_FILE", "spark_bronze_monitor.jsonl"
     )
 
     if output_partitions < 1:
@@ -216,6 +307,11 @@ def main() -> None:
     )
     spark.sparkContext.setLogLevel("WARN")
     configure_minio_s3a(spark)
+    bronze_monitor = MonitoringBronze(
+        path=os.path.join(monitoring_dir, bronze_monitor_file),
+        topic=topic,
+        application_id=spark.sparkContext.applicationId,
+    )
 
     bronze_output = f"s3a://{bronze_bucket}/{topic}"
     dlq_output = f"s3a://{dlq_bucket}/{topic}"
@@ -263,7 +359,10 @@ def main() -> None:
             f"output_partitions={output_partitions}"
         )
 
-        monitor_committed_batches(queries)
+        monitor_committed_batches(
+            queries, bronze_monitor, spark, bronze_output, dlq_output,
+            f"{checkpoint_root}/bronze", f"{checkpoint_root}/dlq",
+        )
 
         failures = [
             f"{query.name}: {query.exception()}"
