@@ -275,7 +275,7 @@ def main() -> None:
     namespace = os.getenv("REDIS_KEY_PREFIX", "ecom:rt:v1")
     ttl_seconds = int(os.getenv("REDIS_METRIC_TTL_SECONDS", "172800"))
     latest_limit = int(os.getenv("REDIS_LATEST_LIMIT", "100"))
-    trigger_interval = os.getenv("REDIS_STREAM_TRIGGER_INTERVAL", "10 seconds")
+    trigger_interval = os.getenv("REDIS_STREAM_TRIGGER_INTERVAL", "25 seconds")
     max_offsets_per_trigger = int(
         os.getenv("KAFKA_MAX_OFFSETS_PER_TRIGGER", "10000")
     )
