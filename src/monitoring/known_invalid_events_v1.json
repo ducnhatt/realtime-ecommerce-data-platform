@@ -1,0 +1,22 @@
+{
+  "schema_version": "monitoring-quarantine-v1",
+  "entries": [
+    {
+      "source": "spark_bronze_monitor.jsonl",
+      "run_id": "app-20260927155616-0001",
+      "batch_id": 3,
+      "reason": "No-data progress was emitted before the committed batch with the same ID; sink manifests later showed Bronze 16 (VALID 3, WARNING 13) and DLQ 4. The three early monitoring events do not describe that committed batch.",
+      "evidence": {
+        "batch_input_rows": 20,
+        "valid_count": 3,
+        "warning_count": 13,
+        "invalid_count": 4
+      },
+      "event_ids": {
+        "quality_counts": "a2c0ac64-e564-577c-a15f-1c9d36d7d8d2",
+        "batch_duration": "534bbb48-35ef-564f-8b45-98c46c1ba171",
+        "last_committed": "b18771ed-586e-56b1-b4af-732d7be2c335"
+      }
+    }
+  ]
+}
